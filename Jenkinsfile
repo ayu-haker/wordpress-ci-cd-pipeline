@@ -9,161 +9,199 @@ pipeline {
 
     environment {
         NAMESPACE = 'wp-project'
-        KUBECONFIG_CRED_ID = 'kubeconfig-cred'
-        REPO_URL = 'https://github.com/ayu-haker/wordpress-ci-cd-pipeline.git'
-        BRANCH = 'main'
+        KUBECONFIG = '/var/lib/jenkins/.kube/config'
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                git branch: "${BRANCH}", url: "${REPO_URL}"
+                echo '========== CHECKOUT =========='
+
+                git(
+                    branch: 'main',
+                    url: 'https://github.com/ayu-haker/wordpress-ci-cd-pipeline.git'
+                )
+            }
+        }
+
+        stage('Check Kubernetes') {
+            steps {
+                echo '========== KUBERNETES CHECK =========='
+
+                sh '''
+                    set -e
+
+                    echo "kubectl version:"
+                    kubectl version --client
+
+                    echo ""
+                    echo "Kubernetes nodes:"
+                    kubectl get nodes
+
+                    echo ""
+                    echo "Current context:"
+                    kubectl config current-context
+                '''
             }
         }
 
         stage('Validate Manifests') {
             steps {
-                withCredentials([
-                    file(credentialsId: "${KUBECONFIG_CRED_ID}", variable: 'KUBECONFIG')
-                ]) {
-                    sh '''
-                        set -e
+                echo '========== VALIDATE MANIFESTS =========='
 
-                        echo "Checking kubectl..."
-                        kubectl version --client
+                sh '''
+                    set -e
 
-                        echo "Checking Kubernetes cluster..."
-                        kubectl get nodes
+                    echo "Validating namespace and secret..."
+                    kubectl apply \
+                        --dry-run=client \
+                        -f namespace-secret.yaml
 
-                        echo "Validating manifests..."
+                    echo "Validating MySQL..."
+                    kubectl apply \
+                        --dry-run=client \
+                        -f mysql-deployment.yaml
 
-                        kubectl apply --dry-run=client -f namespace-secret.yaml
-                        kubectl apply --dry-run=client -f mysql-deployment.yaml
-                        kubectl apply --dry-run=client -f wordpress-deployment.yaml
+                    echo "Validating WordPress..."
+                    kubectl apply \
+                        --dry-run=client \
+                        -f wordpress-deployment.yaml
 
-                        echo "✅ Manifest validation successful"
-                    '''
-                }
+                    echo "✅ All manifests are valid"
+                '''
             }
         }
 
         stage('Deploy Namespace & Secret') {
             steps {
-                withCredentials([
-                    file(credentialsId: "${KUBECONFIG_CRED_ID}", variable: 'KUBECONFIG')
-                ]) {
-                    sh '''
-                        set -e
+                echo '========== DEPLOY NAMESPACE & SECRET =========='
 
-                        echo "Deploying namespace and secret..."
+                sh '''
+                    set -e
 
-                        kubectl apply -f namespace-secret.yaml
+                    kubectl apply -f namespace-secret.yaml
 
-                        echo "✅ Namespace and secret deployed"
-                    '''
-                }
+                    echo "Namespace:"
+                    kubectl get namespace ${NAMESPACE}
+
+                    echo "Secret:"
+                    kubectl -n ${NAMESPACE} get secret
+                '''
             }
         }
 
         stage('Deploy MySQL') {
             steps {
-                withCredentials([
-                    file(credentialsId: "${KUBECONFIG_CRED_ID}", variable: 'KUBECONFIG')
-                ]) {
-                    sh '''
-                        set -e
+                echo '========== DEPLOY MYSQL =========='
 
-                        echo "Deploying MySQL..."
+                sh '''
+                    set -e
 
-                        kubectl apply -f mysql-deployment.yaml
+                    kubectl apply -f mysql-deployment.yaml
 
-                        echo "Waiting for MySQL rollout..."
+                    echo "Waiting for MySQL..."
 
-                        kubectl -n ${NAMESPACE} rollout status \
-                            deployment/mysql \
-                            --timeout=180s
+                    kubectl -n ${NAMESPACE} rollout status \
+                        deployment/mysql \
+                        --timeout=300s
 
-                        echo "✅ MySQL deployed successfully"
-                    '''
-                }
+                    echo "✅ MySQL deployment successful"
+
+                    kubectl -n ${NAMESPACE} get pods
+                '''
             }
         }
 
         stage('Deploy WordPress') {
             steps {
-                withCredentials([
-                    file(credentialsId: "${KUBECONFIG_CRED_ID}", variable: 'KUBECONFIG')
-                ]) {
-                    sh '''
-                        set -e
+                echo '========== DEPLOY WORDPRESS =========='
 
-                        echo "Deploying WordPress..."
+                sh '''
+                    set -e
 
-                        kubectl apply -f wordpress-deployment.yaml
+                    kubectl apply -f wordpress-deployment.yaml
 
-                        echo "Waiting for WordPress rollout..."
+                    echo "Waiting for WordPress..."
 
-                        kubectl -n ${NAMESPACE} rollout status \
-                            deployment/wordpress \
-                            --timeout=300s
+                    kubectl -n ${NAMESPACE} rollout status \
+                        deployment/wordpress \
+                        --timeout=300s
 
-                        echo "✅ WordPress deployed successfully"
-                    '''
-                }
+                    echo "✅ WordPress deployment successful"
+                '''
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                withCredentials([
-                    file(credentialsId: "${KUBECONFIG_CRED_ID}", variable: 'KUBECONFIG')
-                ]) {
-                    sh '''
-                        set -e
+                echo '========== VERIFY DEPLOYMENT =========='
 
-                        echo "===== NODES ====="
-                        kubectl get nodes
+                sh '''
+                    set -e
 
-                        echo "===== PODS ====="
-                        kubectl -n ${NAMESPACE} get pods -o wide
+                    echo ""
+                    echo "===== NODES ====="
+                    kubectl get nodes
 
-                        echo "===== SERVICES ====="
-                        kubectl -n ${NAMESPACE} get svc
+                    echo ""
+                    echo "===== PODS ====="
+                    kubectl -n ${NAMESPACE} get pods -o wide
 
-                        echo "===== DEPLOYMENTS ====="
-                        kubectl -n ${NAMESPACE} get deployments
+                    echo ""
+                    echo "===== SERVICES ====="
+                    kubectl -n ${NAMESPACE} get svc
 
-                        echo "===== ROLLOUT STATUS ====="
+                    echo ""
+                    echo "===== DEPLOYMENTS ====="
+                    kubectl -n ${NAMESPACE} get deployments
 
-                        kubectl -n ${NAMESPACE} rollout status \
-                            deployment/mysql \
-                            --timeout=180s
+                    echo ""
+                    echo "===== PVC ====="
+                    kubectl -n ${NAMESPACE} get pvc
 
-                        kubectl -n ${NAMESPACE} rollout status \
-                            deployment/wordpress \
-                            --timeout=300s
+                    echo ""
+                    echo "===== MYSQL STATUS ====="
+                    kubectl -n ${NAMESPACE} rollout status \
+                        deployment/mysql \
+                        --timeout=60s
 
-                        echo "✅ Kubernetes deployment verified successfully"
-                    '''
-                }
+                    echo ""
+                    echo "===== WORDPRESS STATUS ====="
+                    kubectl -n ${NAMESPACE} rollout status \
+                        deployment/wordpress \
+                        --timeout=60s
+
+                    echo ""
+                    echo "======================================"
+                    echo "✅ WORDPRESS DEPLOYMENT VERIFIED"
+                    echo "======================================"
+                '''
             }
         }
     }
 
     post {
         success {
-            echo "========================================="
-            echo "✅ WordPress CI/CD Pipeline SUCCESS"
-            echo "Namespace: ${NAMESPACE}"
-            echo "========================================="
+            echo '''
+=========================================
+✅ WORDPRESS CI/CD PIPELINE SUCCESS
+=========================================
+Namespace: wp-project
+Kubernetes: Minikube
+Deployment: Successful
+=========================================
+'''
         }
 
         failure {
-            echo "========================================="
-            echo "❌ WordPress CI/CD Pipeline FAILED"
-            echo "Check the stage logs above."
-            echo "========================================="
+            echo '''
+=========================================
+❌ WORDPRESS CI/CD PIPELINE FAILED
+=========================================
+Check the stage logs above.
+=========================================
+'''
         }
 
         always {
